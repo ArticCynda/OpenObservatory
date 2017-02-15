@@ -16,8 +16,6 @@
 #include "mq135/mq135.h"
 
 // SD card access
-//#include "sdcard/sdcardutils.c"
-
 #include "sdcard/sdcardutils.h"
 #include "sdcard/Fat16util.h"
 #include "sdcard/SdCard.h"
@@ -26,13 +24,9 @@
 #include "sdcard/Fat16Config.h"
 #include "sdcard/Fat16mainpage.h"
 
-
-//#define RZERO_SET_ADDR 0 // a flag indicating whether the R zero has been calibrated
-//#define RZERO_ADDR 1  // calibration value for R zero
-//#define RZERO_FLAG 0xAA // a flag to set
-
-//#define SYNC_INT 2000
-
+/*
+ * Debug flag. Uncomment this to enable verbose serial output.
+ */
 //#define DEBUG
 
 #ifdef DEBUG
@@ -43,57 +37,22 @@
   #define DPrintln(...) {}
 #endif
 
-//#define SPrint(...) { Serial.print(F(__VA_ARGS__)); }
-//#define SPrintln(...) { Serial.println(F(__VA_ARGS__)); }
-
-
 DHT xDHT11(O2_RH_SENSE, DHT11);
 
 MQ135 xMQ135 = MQ135(O2_CO2_SENSE);
-//float fRZero = 76.63; // datasheet reference value
 float fRZero = 184.16;
 
 SI1145 xSi1145 = SI1145();
 
-//BMP180 bmp;
 BMP180 xBMP180;
 
 SdCard card;
 Fat16 fs;
 
-
-
-//bool ledState;
-//bool cardInserted;
-//bool cardProtected;
-
-//bool logging = false;
-//bool initRequired = true; // records if initialization was attempted but failed
-
 /*
-struct sensorData
-{
-  float Temp;
-  float Pressure;
-  float Humidity;
-  float UV;
-  float IR;
-  float Illuminance;
-  float CO2;   
-};
-
-struct sensorIntegrity
-{
-  bool BMP180_OK;
-  bool Si1145_OK;
-  bool DHT11_OK;
-  bool MQ135_OK;
-};
-*/
-
-//sensorData sensors;
-//sensorIntegrity sensorStatus;
-
+ * Configure watchdog timer to reset the board after 1000 ms.
+ * Necessary for BMP180 and SI1145 in case of failure on the I2C bus.
+ */
 void watchdogSetup(void)
 {
   cli(); // disables interrupts temporarily to ensure WDT setup is uninterrupted.
@@ -121,13 +80,13 @@ void watchdogSetup(void)
   DPrintln("Watchdog enabled, time-out 1000ms");
 }
 
+// addresses
+#define PROGR_ADDR 0                        // test progress
+#define RETRY_ADDR sizeof(uint8_t)          // number of consecutive attempts in the current test
+#define I2C_FLAG_ADDR  2 * sizeof(uint8_t)  // a flag indicating if an I2C bus issue is likely
+#define MEMTEST_ADDR 3 * sizeof(uint8_t)    // empty memory position for EEPROM stress testing
 
-//uint64_t startTime;
-#define PROGR_ADDR 0
-#define RETRY_ADDR sizeof(uint8_t)
-#define I2C_FLAG_ADDR  2 * sizeof(uint8_t)
-#define MEMTEST_ADDR 3 * sizeof(uint8_t)
-
+// list of tests
 #define s_INIT      0
 #define s_MEM       1
 #define s_POWER     2
@@ -140,6 +99,10 @@ void watchdogSetup(void)
 #define s_SD        9
 #define s_FINISHED  10
 
+/*
+ * Print the relevant EEPROM contents to serial terminal.
+ * Only used for debugging.
+ */
 void printEEPROM()
 {
   Serial.println("EEPROM contents:");
@@ -156,76 +119,68 @@ void printEEPROM()
  */
 bool initCard(SdCard *sd, Fat16 *file)
 {
-  //if (cardProtected())
-  //{
-  //    DPrintln(F("Card is protected against writing. Remove it, flip its WP switch, reinsert it and reboot the station."));
-  //}
-  //else
-  //{
-    if (!sd->begin(O2_SD_SS))
+  if (!sd->begin(O2_SD_SS))
+  {
+    DPrintln(F("Problem initializing SD card."));
+  }
+  else
+  {
+    DPrintln(F("SD card intialized successfully."));
+
+    if (!Fat16::init(sd))
     {
-      DPrintln(F("Problem initializing SD card."));
+      DPrintln(F("Unable to initialize the FAT16 file system on the card."));
     }
     else
     {
-      DPrintln(F("SD card intialized successfully."));
-  
-      if (!Fat16::init(sd))
+      DPrintln(F("FAT16 file system initialized successfully."));
+      
+      // create a new file
+      char name[] = "weather0.csv";
+      for (uint8_t i = 0; i < 10; i++)
       {
-        DPrintln(F("Unable to initialize the FAT16 file system on the card."));
+        name[7] = i + '0';
+        // O_CREAT - create the file if it does not exist
+        // O_EXCL - fail if the file exists
+        // O_WRITE - open for write only
+        if (file->open(name, O_CREAT | O_EXCL | O_WRITE))
+          break;
+      }
+      
+      if (!file->isOpen())
+      {
+        DPrintln(F("Failed to open file on the card."));
       }
       else
       {
-        DPrintln(F("FAT16 file system initialized successfully."));
-        
-        // create a new file
-        char name[] = "weather0.csv";
-        for (uint8_t i = 0; i < 10; i++)
-        {
-          name[7] = i + '0';
-          // O_CREAT - create the file if it does not exist
-          // O_EXCL - fail if the file exists
-          // O_WRITE - open for write only
-          if (file->open(name, O_CREAT | O_EXCL | O_WRITE))
-            break;
-        }
-        
-        if (!file->isOpen())
-        {
-          DPrintln(F("Failed to open file on the card."));
-        }
-        else
-        {
-          DPrint(F("Data will be saved to file ")); DPrint(name); DPrintln(".");
-          //setLEDstate(OK);
-          return true;
-        }
+        DPrint(F("Data will be saved to file ")); DPrint(name); DPrintln(".");
+        return true;
       }
-    //}    
+    } 
   }
-  //setLEDstate(ERR);
   return false;
 }
 
+/*
+ * Main routine, executing all tests sequentially
+ * If the watchdog resets, because of a lock-up on I2C bus for example,
+ * the microcontroller will restart, with setup() as entry point.
+ */
 void setup() {
-  // put your setup code here, to run once:
 
+  // intialize serial connection for reporting:
+  Serial.begin(SERIAL_SPEED);
+  DPrintln("starting up");
 
-
-  //EEPROM.put(PROGRESS_FLAG_ADDR, 0);
-  //SPrint("Debug: flag: "); Serial.print(EEPROM.get(PROGRESS_FLAG_ADDR), DEC); SPrint(" retries: "); Serial.print(EEPROM.get(PROGRESS_RETRIES_ADDR), DEC);
-
-      // intialize serial connection for reporting:
-    Serial.begin(SERIAL_SPEED);
-    DPrintln("starting up");
-
-    #ifdef DEBUG
-      printEEPROM();
-    #endif
+  #ifdef DEBUG
+    // in debug mode, print the contents of the EEPROM to the serial output
+    printEEPROM();
+  #endif
 
   // set up the watchdog
   watchdogSetup();
 
+  // check the state of the test progress and resume from the previous state if necessary
   uint8_t iProgress, iTries;
   EEPROM.get(PROGR_ADDR, iProgress);
   if (iProgress > s_FINISHED) // invalid state
@@ -233,15 +188,16 @@ void setup() {
     iProgress = 0;
     EEPROM.put(PROGR_ADDR, (uint8_t)s_INIT);
   }
-
   EEPROM.get(RETRY_ADDR, iTries);
   DPrint("Start Progress: "); DPrint(iProgress); DPrint(" Tries: "); DPrintln(iTries);
 
+  // test entry point, only executed once
   if (iProgress == 0)
   {
-
+    // some basic information about the program
     SPrintln("\n\nStarted OpenObservatory Rev. 3 self test.");
-    SPrintln("Position the board on a flat surface, keep obstacles away from sensors, and insert 4 GB or smaller, FAT32 formatted SD card in the card slot.\n");
+    SPrintln("Position the board on a flat surface, keep obstacles away from sensors, and insert 4 GB or smaller, FAT32 formatted SD card in the card slot.");
+    SPrintln("Warning: self test only checks board hardware, does not perform calibration!\n");
 
     DPrint("Progress: "); DPrint(iProgress); DPrint(" Tries: "); DPrintln(iTries);
 
@@ -267,8 +223,7 @@ void setup() {
     EEPROM.put(RETRY_ADDR, iTries);
     DPrint("Progress 1: "); DPrint(iProgress); DPrint(" Tries: "); DPrintln(iTries);
           
-    //uint8_t iTestAddr = RETRY_ADDR + sizeof(uint8_t);
-    uint8_t iTestValue = 66;
+    uint8_t iTestValue = 66; // a random value to write to the EEPROM
     // write test value to EEPROM:
     EEPROM.put(MEMTEST_ADDR, iTestValue);
     // check if the value is there:
@@ -277,7 +232,6 @@ void setup() {
 
     // now clear the remaining EEPROM
     bool memtest = true;
-    
     for (int i = MEMTEST_ADDR; i < EEPROM.length(); i++)
     {
       EEPROM.write(i, uint8_t(0));
@@ -303,9 +257,9 @@ void setup() {
     }
     memtest &= (prod == 1);
     
-    
-
+    // to check the correct operation of the watchdog timer, uncomment the next instruction:
     //delay(1500);
+    // to check correct operation of EEPROM memory check, uncomment the next instruction:
     //iReadValue = 12;
 
     if (iReadValue == iTestValue && memtest)
@@ -329,24 +283,28 @@ void setup() {
           
       if (iTries == 5)
       {
+        // if after 5 attempts the EEPROM contents cannot be verified, stop the test here.
+        // it cannot continue with faulty memory.
         SPrintln("Failed.");
         SPrintln("Unrecoverable memory read/write error detected. Self test cannot continue.");
         // reset test status
         EEPROM.put(PROGR_ADDR, (uint8_t)0);
         EEPROM.put(RETRY_ADDR, (uint8_t)0);
+        // keep resetting watchdog indefnitely to prevent it from resetting the board after time-out
         while (1)
           wdt_reset();
       }
     }
   }
+  // EEPROM test took too long and timed out 5 times, stop testing.
   if (iProgress == s_MEM && iTries >= 5)
   {
-         SPrintln("Failed.");
-        SPrintln("Unrecoverable memory read/write error detected. Self test cannot continue.");
-                EEPROM.put(PROGR_ADDR, (uint8_t)0);
-        EEPROM.put(RETRY_ADDR, (uint8_t)0);
-        while (1)
-          wdt_reset();
+   SPrintln("Failed.");
+   SPrintln("Unrecoverable memory read/write error detected. Self test cannot continue.");
+   EEPROM.put(PROGR_ADDR, (uint8_t)0);
+   EEPROM.put(RETRY_ADDR, (uint8_t)0);
+   while (1)
+     wdt_reset();
   }
 
   // STAGE POWER
@@ -368,10 +326,11 @@ void setup() {
       Serial.print("Voltage: "); Serial.println(result);
     #endif
 
+    // check if voltage rail is within acceptable limits
     if (result < 3450 && result > 3150)
     {
         // test succeeded, move on to next stage
-        SPrintln(" OK.");
+        SPrintln("OK.");
         iProgress = s_DHT11;
         EEPROM.put(PROGR_ADDR, iProgress);
         // reset the retry counter
@@ -381,8 +340,15 @@ void setup() {
 
         SPrint("Checking humidity sensor... ");
     }
+    else
+    {
+      // voltage rail out of range, give it some time to stabilize before retrying
+      delay(250);
+      wdt_reset();
+    }
     if (iTries == 5)
     {
+      // if the power rail doesn't stabilize, give a warming:
       if (result > 3450)
         SPrintln("Failed. Warning: supply voltage too high.")
       else 
@@ -399,9 +365,10 @@ void setup() {
       SPrint("Checking humidity sensor... ");
     }
   }
+  // internal ADC timed out 5 times, skip
   if (iProgress == s_POWER && iTries >= 5)
   {
-    SPrintln("Failed. CO2 sensor heater failure.");
+    SPrintln("Failed. Internal voltage rail monitor not responding.");
 
     // move on to next stage
     iProgress = s_DHT11;
@@ -427,6 +394,7 @@ void setup() {
       wdt_reset();
       if (iTries == 5)
       {
+        // DHT-11 doesn't respond, give up after 5 attempts
         SPrintln("Failed. DHT11 humidity sensor not responding.");
 
         // move on to next stage
@@ -446,7 +414,10 @@ void setup() {
     }
     else
     {
+      // test succeeded, DHT11 initialized correctly.
       SPrintln("OK.");
+
+      // check if humidity and temperature are within credible limits:
       if (fHumidity > 90.0 || fHumidity < 10.0)
         SPrintln("Warning: DHT11 humidity sensor may require calibration.");
         
@@ -483,10 +454,14 @@ void setup() {
         SPrint("Checking temperature sensor... ");
   }
 
+  // STAGE TEMPERATURE
   while (iProgress == s_TEMP && iTries++ < 5)
   {
     EEPROM.put(RETRY_ADDR, iTries);
 
+    /*
+     * The following code uses the internal temperature sensor of the ATmega328AU as reference.
+     */
     unsigned int wADC;
     double t;
   
@@ -498,9 +473,7 @@ void setup() {
     // Set the internal reference and mux.
     ADMUX = (_BV(REFS1) | _BV(REFS0) | _BV(MUX3));
     ADCSRA |= _BV(ADEN);  // enable the ADC
-  
     delay(20);            // wait for voltages to become stable.
-  
     ADCSRA |= _BV(ADSC);  // Start the ADC
   
     // Detect end-of-conversion
@@ -531,6 +504,7 @@ void setup() {
 
     SPrint("Checking pressure sensor... ");
   }
+  // internal ADC timed out, skip
   if (iProgress == s_TEMP && iTries >= 5)
   {
     SPrintln("Failed. Temperature sensor not responding.");
@@ -546,26 +520,11 @@ void setup() {
     SPrint("Checking pressure sensor... ");
   }
 
-
+  // first attempt at initializing I2C bus, report status before commencing in debug mode
   DPrint("Progress BMP180: "); DPrint(iProgress); DPrint(" Tries: "); DPrintln(iTries);
 
-  float fPressure;
-  /*
-      xBMP180.begin();
-      
-    if (!readPressure(&fPressure, &fTemp))
-    {
-            SPrintln("Failed. ");
-    }
-
-    else
-      SPrintln("Done. ");
-      */
-
-  //bool I2Cfailure = true;
-
   // STAGE BMP180
-
+  float fPressure;
   while (iProgress == s_BMP180 && iTries++ < 5)
   {
     EEPROM.put(RETRY_ADDR, iTries);
@@ -575,6 +534,7 @@ void setup() {
     xBMP180.begin();
     if (!readPressure(&fPressure, &fTemp))
     {
+      // BMP180 responded with wrong ID or didn't initialize correctly
       if (iTries == 5)
       {
         SPrintln("Failed. BMP180 barometer not responding.");
@@ -601,7 +561,8 @@ void setup() {
         Serial.print("Temp: "); Serial.println(fTemp);
         Serial.print("Pressure: "); Serial.println(fPressure);
       #endif
-      
+
+      // check if values are within credible limits:
       if (fPressure > 110000.0 || fPressure < 80000.0)
         SPrintln("Warning: BMP180 pressure sensor may require calibration.");
   
@@ -619,20 +580,22 @@ void setup() {
       SPrint("Checking CO2 sensor... ");
     }
   }
-if (iProgress == s_BMP180 && iTries >= 5)
-{
-  SPrintln("Failed. BMP180 barometer not responding.");
 
-  // move on to next stage
-  iProgress = s_MQ135;
-  EEPROM.put(PROGR_ADDR, iProgress);
-  // reset the retry counter
-  iTries = 0;
-  EEPROM.put(RETRY_ADDR, iTries);
-  wdt_reset();
-
-  SPrint("Checking CO2 sensor... ");
- }
+  // BMP180 connection timed out, possible issue with I2C bus or sensor missing
+  if (iProgress == s_BMP180 && iTries >= 5)
+  {
+    SPrintln("Failed. BMP180 barometer not responding.");
+  
+    // move on to next stage
+    iProgress = s_MQ135;
+    EEPROM.put(PROGR_ADDR, iProgress);
+    // reset the retry counter
+    iTries = 0;
+    EEPROM.put(RETRY_ADDR, iTries);
+    wdt_reset();
+  
+    SPrint("Checking CO2 sensor... ");
+   }
 
 
   // STAGE MQ135
@@ -640,16 +603,15 @@ if (iProgress == s_BMP180 && iTries >= 5)
   {
     EEPROM.put(RETRY_ADDR, iTries);
 
-    // turn on heater & wait 250ms
+    // turn on heater & wait 500ms
     pinMode(O2_CO2_HEATER, OUTPUT);
     digitalWrite(O2_CO2_HEATER, HIGH);
+    delay(500);
     wdt_reset();
     
     pinMode(O2_CO2_SENSE, INPUT);
 
     // try to initialize the sensor:
-    //xMQ135.begin();
-
     float fCO2 = xMQ135.getCorrectedPPM(fTemp, fHumidity);
 
     #ifdef DEBUG
@@ -660,11 +622,14 @@ if (iProgress == s_BMP180 && iTries >= 5)
       Serial.print("PPM: "); Serial.println(fCO2, DEC);
     #endif    
 
-    uint16_t adcvalue = analogRead(O2_CO2_SENSE);
+    // read a value from the sensor
+    uint16_t adcvalue = analogRead(O2_CO2_SENSE);   
 
-    //if (readCO2ppm(&fCO2, fPressure, fHumidity))
-    
-    if (adcvalue > 25 && adcvalue < 1000)
+    // check if it is within credible limits
+    // > 1000 usually means sensor is stuck at 1
+    // < 10 usually means sensor is stuck at 0
+    // 10 - 360 usually means sensor is missing or poorly connected
+    if (adcvalue > 360 && adcvalue < 1000)
     {
       // test succeeded, move on to next stage
       SPrintln("OK.");
@@ -686,46 +651,49 @@ if (iProgress == s_BMP180 && iTries >= 5)
     }
     else
     {
+      // sensor not connected, or short with power or ground
       if (iTries == 5)
       {
         // test failed
         SPrintln("Failed. MQ-135 sensor not responding.")
 
-      iProgress = s_SI1145;
-      EEPROM.put(PROGR_ADDR, iProgress);
-      // reset the retry counter
-      iTries = 0;
-      EEPROM.put(RETRY_ADDR, iTries);
-      wdt_reset();
-
-      SPrint("Checking light and UV sensors... ");     
+        iProgress = s_SI1145;
+        EEPROM.put(PROGR_ADDR, iProgress);
+        // reset the retry counter
+        iTries = 0;
+        EEPROM.put(RETRY_ADDR, iTries);
+        wdt_reset();
+  
+        SPrint("Checking light and UV sensors... ");     
       }
     }
   }
+  // reading ADC timed out 5 times
   if (iProgress == s_MQ135 && iTries >= 5)
-{
-        SPrintln("Failed. MQ-135 sensor not responding.")
+  {
+    SPrintln("Failed. MQ-135 sensor not responding.")
 
-      iProgress = s_SI1145;
-      EEPROM.put(PROGR_ADDR, iProgress);
-      // reset the retry counter
-      iTries = 0;
-      EEPROM.put(RETRY_ADDR, iTries);
-      wdt_reset();
+    iProgress = s_SI1145;
+    EEPROM.put(PROGR_ADDR, iProgress);
+    // reset the retry counter
+    iTries = 0;
+    EEPROM.put(RETRY_ADDR, iTries);
+    wdt_reset();
 
-      SPrint("Checking light and UV sensors... ");    
- }
-
+    SPrint("Checking light and UV sensors... ");    
+   }
 
   // STAGE SI1145
   while (iProgress == s_SI1145 && iTries++ < 5)
   {
     EEPROM.put(RETRY_ADDR, iTries);
 
+    // try to initialize SI1145:
     xSi1145.begin();
     float fLux, fUV, fIR;
     if (!readLight(&fLux, &fUV, &fIR))
     {
+      // sensor responded with wrong ID
       if (iTries == 5)
       {
        SPrintln("Failed. SI1145 sensor not responding.")
@@ -742,6 +710,7 @@ if (iProgress == s_BMP180 && iTries >= 5)
     }
     else
     {
+      // sensor correctly intialized
       SPrintln("OK.")
       // clear I2C failure flag
       EEPROM.put(I2C_FLAG_ADDR, 1);
@@ -755,9 +724,8 @@ if (iProgress == s_BMP180 && iTries >= 5)
 
       SPrint("Checking peripherals... ");   
     }
-
-
   }
+  // sensor communication timed out, usually indicates sensor missing or I2C problem
   if (iProgress == s_SI1145 && iTries >= 5)
   {
       SPrintln("Failed. SI1145 sensor not responding.")
@@ -777,6 +745,7 @@ while (iProgress == s_LED && iTries++ < 5)
 {
   EEPROM.put(RETRY_ADDR, iTries);
 
+  // configure USB status signals as inputs
   pinMode(O2_USB_CONFIG, INPUT);
   pinMode(O2_USB_SUSPEND, INPUT);
   pinMode(O2_SD_LED, INPUT);
@@ -787,10 +756,13 @@ while (iProgress == s_LED && iTries++ < 5)
     Serial.print("LED: "); Serial.println(digitalRead(O2_SD_LED));
   #endif DEBUG
 
+  // read status
+  // USB should be active in this state (configured and not suspended)
   bool USB_CONF = digitalRead(O2_USB_CONFIG);
   bool USB_SUSP = digitalRead(O2_USB_SUSPEND);
   bool LED_STATE = digitalRead(O2_SD_LED);
 
+  // flash the LED of the SD card, then turn it off again
   pinMode(O2_SD_LED, OUTPUT);
   for (int i = 0; i < 11; i++)
   {
@@ -798,8 +770,9 @@ while (iProgress == s_LED && iTries++ < 5)
     delay(125);
     wdt_reset();
   }
+  pinMode(O2_SD_LED, INPUT);
 
-
+  // check if USB signals are correct
   if (USB_CONF && !USB_SUSP && LED_STATE)
   {
     SPrintln("OK.");
@@ -817,25 +790,21 @@ while (iProgress == s_LED && iTries++ < 5)
   {
     if (iTries == 5)
     {
-          // strange configuration detected
-    if (!USB_CONF || USB_SUSP)
+      // strange configuration detected
       SPrintln("Failed. USB connection does not initialize correctly.");
-
-    iProgress = s_SD;
-    EEPROM.put(PROGR_ADDR, iProgress);
-    // reset the retry counter
-    iTries = 0;
-    EEPROM.put(RETRY_ADDR, iTries);
-    wdt_reset();
-
-    SPrint("Checking SD card... ");
+  
+      iProgress = s_SD;
+      EEPROM.put(PROGR_ADDR, iProgress);
+      // reset the retry counter
+      iTries = 0;
+      EEPROM.put(RETRY_ADDR, iTries);
+      wdt_reset();
+  
+      SPrint("Checking SD card... ");
     }
   }
-
-//    #define O2_USB_CONFIG     2      // INPUT   USB initialization complete
-//  #define O2_USB_SUSPEND    3      // INPUT   USB communication suspended by host
-//    #define O2_SD_LED         9      // OUTPUT  SD card state indicator LEDs
 }
+// reading digital inputs timed out, usually indicates I/O issue
 if (iProgress == s_LED && iTries >= 5)
 {
     SPrintln("Failed. Unable to read I/O.");
@@ -853,9 +822,10 @@ if (iProgress == s_LED && iTries >= 5)
 // STAGE SD CARD
 while (iProgress == s_SD && iTries++ < 5)
 {
-    EEPROM.put(RETRY_ADDR, iTries);
+  EEPROM.put(RETRY_ADDR, iTries);
 
-      pinMode(O2_USB_CONFIG, INPUT);
+  // configure pins of card detection and write protection
+  pinMode(O2_USB_CONFIG, INPUT);
   pinMode(O2_USB_SUSPEND, INPUT);
 
   #ifdef DEBUG
@@ -883,7 +853,7 @@ while (iProgress == s_SD && iTries++ < 5)
       
     }
   }
-
+  // card couldn't be detected after 5 attempts
   if (iTries == 5)
   {
     if (!cardInstalled)
@@ -906,6 +876,7 @@ while (iProgress == s_SD && iTries++ < 5)
     wdt_reset();
   }
 }
+// intializing card timed out, usually indicates faulty card or SPI bus problems
 if (iProgress == s_SD && iTries >= 5)
 {
   SPrintln("Failed. Unable to initialize card.");
@@ -917,137 +888,26 @@ if (iProgress == s_SD && iTries >= 5)
   wdt_reset();
 }
 
-
-
   // check for I2C issues
   uint8_t I2C_flag;
   EEPROM.get(I2C_FLAG_ADDR, I2C_flag);
   if (!I2C_flag)
     SPrintln("Couldn't connect to I2C sensors, check I2C bus.");
-   
+
+  // reset memory state
   EEPROM.put(I2C_FLAG_ADDR, s_INIT);
   EEPROM.put(MEMTEST_ADDR, s_INIT);
   EEPROM.put(PROGR_ADDR, s_INIT);
   EEPROM.put(RETRY_ADDR, s_INIT);
   SPrintln("Self test finished!");
 
+  // keep the watchdog suspended to prevent automatic reset of the board
   while (true)
     wdt_reset();
  
+} // end of void setup()
 
-  //startTime = millis();
-  
-
-
-
-/*
-  // initialize Si1145
-  SPrint("Searching for Si1145... ");
-  xSi1145.begin();
-  float fLux, fUV, fIR;
-  if (!readLight(&fLux, &fUV, &fIR))
-  {
-    SPrintln("\nHardware error: Si1145 light sensor not responsing.");
-  }
-  else
-  {
-    SPrintln("Found Si1145.");
-    // TODO: add calibration check for Si1145 here
-  }
-  */
-
-/*
-  // initialize BMP180
-  xBMP180.begin();
-  float fPressure, fTemp, fHumidity;
-  if (!readPressure(&fPressure, &fTemp))
-  {
-    SPrintln("Hardware error: BMP180 barometer not responding.");
-  }
-  else
-  {
-    SPrintln("Found BMP180.");
-    if (fPressure > 110000.0 || fPressure < 80000.0)
-      SPrintln("Warning: BMP180 pressure sensor may require calibration.");
-
-    if (fTemp > 300 || fTemp < 100)
-      SPrintln("Warning: BMP180 temperature sensor may require calibration.");
-  }
-  */
-
-/*
-  // initialize MQ135
-  xMQ135.begin();
-  float fCO2;
-  if (!readCO2ppm(&fCO2, fPressure, fHumidity))
-  {
-    SPrintln("Hardware error: MQ135 CO2 level sensor not responding.");
-  }
-  else
-  {
-    SPrintln("Found MQ-series gas sensor, assuming MQ135.");
-    // TODO: add calibration check for MQ135
-
-    // check if the MQ135 has been calibrated, and load the calibrated RZero
-    uint8_t iRZeroFlag;
-    EEPROM.get(RZERO_SET_ADDR, iRZeroFlag);
-    if (iRZeroFlag == RZERO_FLAG)
-    {
-      // calibration value for RZero has been set, load it
-      EEPROM.get(RZERO_ADDR, fRZero);
-  
-      if (fRZero == 0)
-      {
-        SPrintln("Warning: MQ135 calibration data missing, resetting calibration status.");
-        EEPROM.put(RZERO_SET_ADDR, 0); // reset flag
-      }    
-      
-    }
-    else
-    {
-      SPrintln("Warning: MQ135 requires calibration.");
-    }
-  }
-  */
-
-
-
-  // check the SD card slot for a card, if one is found then try to make it writable to log data:
-  //loggingConfig(&card, &fs);
-
-  //uint32_t testTime = (uint32_t)(millis() - startTime);
-  //SPrint("Self tested completed in "); Serial.print(testTime); SPrint(" ms.");
-
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-
-}
-
-/*
- * read all sensors and store their values into the data structure
- */
-/*void readSensorData(sensorData *data, sensorIntegrity *sensorStats)
-{
-  // read temperature and pressure:
-  sensorStats->BMP180_OK = readPressure(&data->Pressure, &data->Temp);
-
-  // read humidity:
-  // if reading temperature from the BMP180 failed, then use the temperature reading of the DHT-11 instead
-  float fTemp;
-  if (!sensorStats->BMP180_OK)
-    sensorStats->DHT11_OK = readHumidity(&data->Humidity, &data->Temp);
-  else
-    sensorStats->DHT11_OK = readHumidity(&data->Humidity, &fTemp);
-    
-  // read light:
-  sensorStats->Si1145_OK = readLight(&data->Illuminance, &data->UV, &data->IR);
-
-  // read CO2:
-  sensorStats->MQ135_OK = readCO2ppm(&data->CO2, data->Temp, data->Humidity);
-}
-*/
+void loop() { }
 
 /*
  * read humidity and temperature data from the DHT-11 sensor
@@ -1065,7 +925,6 @@ bool readHumidity(float *humidity, float *temp)
 /*
  * read light sensor data from the Si1145
  */
-
 bool readLight(float *lux, float *uv, float *ir)
 {
     if (!xSi1145.integrityCheck())
@@ -1076,7 +935,6 @@ bool readLight(float *lux, float *uv, float *ir)
     *ir = xSi1145.readUV();
     return true;
 }
-
 
 /*
  * read pressure and temperature data from BMP180
@@ -1090,19 +948,3 @@ bool readPressure(float *pressure, float *temp)
   *pressure = xBMP180.readPressure();
   return true;
 }
-
-/*
- * read CO2 concentration in the air from MQ135
- */
- /*
-bool readCO2ppm(float *CO2ppm, float temp, float RH)
-{
-  if (!xMQ135.integrityCheck())
-    return false;
-
-  *CO2ppm = xMQ135.getCorrectedPPM(temp, RH);
-  //Serial.print("temp: "); Serial.print(temp); Serial.print("; humidity: "); Serial.println(RH);
-    
-  return true;
-}
-*/
