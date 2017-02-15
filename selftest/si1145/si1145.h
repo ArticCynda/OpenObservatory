@@ -169,3 +169,4 @@ class SI1145  {
 
   uint8_t _addr;
 };
+

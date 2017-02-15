@@ -15,7 +15,7 @@
   BSD license, all text above must be included in any redistribution
  ****************************************************/
 
-#include "BMP180.h"
+#include "bmp180.h"
 
 BMP180::BMP180() {
 }

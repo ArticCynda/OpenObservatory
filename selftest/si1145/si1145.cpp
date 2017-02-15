@@ -15,7 +15,7 @@
   BSD license, all text above must be included in any redistribution
  ****************************************************/
 
-#include "SI1145.h"
+#include "si1145.h"
 
 SI1145::SI1145() {
   _addr = SI1145_ADDR;

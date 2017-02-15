@@ -17,8 +17,8 @@
  * along with the Arduino Fat16 Library.  If not, see
  * <http://www.gnu.org/licenses/>.
  */
-#include <Fat16Config.h>
-#include <SdCard.h>
+#include "Fat16Config.h"
+#include "SdCard.h"
 //------------------------------------------------------------------------------
 #if 0//////////////////////////////////////////////////////////////////////////////////////////////////
 // r1 status values

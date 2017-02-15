@@ -26,10 +26,10 @@
 #include <string.h>
 #include <avr/pgmspace.h>
 #include <Print.h>
-#include <SdCard.h>
-#include <utility/FatStructs.h>
-#include <Fat16Config.h>
-#include <utility/FatApiConstants.h>
+#include "SdCard.h"
+#include "utility/FatStructs.h"
+#include "Fat16Config.h"
+#include "utility/FatApiConstants.h"
 //------------------------------------------------------------------------------
 /** Fat16 version YYYYMMDD */
 #define FAT16_VERSION 20140806

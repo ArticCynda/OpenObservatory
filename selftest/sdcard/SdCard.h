@@ -24,7 +24,7 @@
   * SdCard class
   */
 #include <Arduino.h>
-#include <SdInfo.h>
+#include "SdInfo.h"
 //------------------------------------------------------------------------------
 // error codes
 /** Card did not go into SPI mode */

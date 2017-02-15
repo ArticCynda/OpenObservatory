@@ -10,110 +10,24 @@ the datasheet but the information there seems to be wrong.
 
 @section  HISTORY
 
-v2.0 - Added calibration routines, parametrized circuit, added pin configuration
-
 v1.0 - First release
 */
 /**************************************************************************/
 
-#include "MQ135.h"
-
-#if ARDUINO >= 100
- #include "Arduino.h"
-#else
- #include "WProgram.h"
-#endif
+#include "mq135.h"
 
 /**************************************************************************/
 /*!
 @brief  Default constructor
 
 @param[in] pin  The analog input pin for the readout of the sensor
-@param[in] Vc   The supply voltage of the sensor, default 5V
-@param[in] Vref The ADC reference voltage on the Arduino, default 5V
 */
 /**************************************************************************/
-MQ135::MQ135(uint8_t pin, float Vc, float Vref)
-{
-    _pin = pin;
-    _Vc = Vc;
-    _Vref = Vref;
-    _Rzero = RZERO;
-    _AtmoCO2 = ATMOCO2;
-}
 
 MQ135::MQ135(uint8_t pin) {
-  // call constructor with default supply voltage for MQ135 and ADC ref (5V)
-  MQ135(pin, 5., 5.);
+  _pin = pin;
 }
 
-/**************************************************************************/
-/*!
-@brief  Initialize the sensor
-*/
-/**************************************************************************/
-void MQ135::begin(void)
-{
-  pinMode(_pin, INPUT);
-}
-
-/**************************************************************************/
-/*!
-@brief  Fetch a default value (constant) for Rzero
-
-@return A default value for Rzero
-*/
-/**************************************************************************/
-float MQ135::getDefaultRzero()
-{
-    return RZERO;
-}
-
-/**************************************************************************/
-/*!
-@brief  Set the reference resistance at 20°c, 35% RH, 400 ppm CO2
-
-@param[in] Rzero  The resistance of the sensor at 20°C, 35% RH, 400 ppm CO2
-*/
-/**************************************************************************/
-void MQ135::setRZero(float Rzero)
-{
-    if (Rzero <= 0) // negative resistance values not possible!
-        _Rzero = RZERO; // default value
-    else
-        _Rzero = Rzero;
-}
-
-/**************************************************************************/
-/*!
-@brief  Set the current atmospheric CO2 concentration for calibration
-
-@param[in] CO2ppm The atmospheric CO2 concentration
-*/
-/**************************************************************************/
-void MQ135::setAtmosphericCO2ppm(float CO2ppm)
-{
-    if (CO2ppm <= 0)
-        _AtmoCO2 = ATMOCO2; // default value
-    else
-        _AtmoCO2 = CO2ppm;
-}
-
-/**************************************************************************/
-/*!
-@brief  Set the load resistance in the voltage divider
-
-@param[in] RLoad  The load resistance in Ohms
-*/
-/**************************************************************************/
-void MQ135::setRLoad(float RLoad)
-{
-    if (RLoad <= 0)
-        _Rload = RLOAD;
-    else
-        _Rload = RLoad;
-
-}
 
 /**************************************************************************/
 /*!
@@ -138,23 +52,7 @@ float MQ135::getCorrectionFactor(float t, float h) {
 /**************************************************************************/
 float MQ135::getResistance() {
   int val = analogRead(_pin);
-  //return ((1023./(float)val) * 5. - 1.)*RLOAD;
-  float res = ((_Vc * 1024.)/(val * _Vref) - 1) * _Rload / 1000;
-  return res;
-}
-
-/**************************************************************************/
-/*!
-@brief  Checks if the sensor reading is within expected boundaries
-
-@return A value indicating if the sensor is working properly
-*/
-/**************************************************************************/
-bool MQ135::integrityCheck()
-{
-  // according to datasheet, the value for Rs/R0 must be between 0.2 and 4
-  float div = (float)getResistance() * 1000. / (float)_Rzero;
-  return (div < MAXRSRO && div > MINRSRO);
+  return (1023./(float)val)*RLOAD;
 }
 
 /**************************************************************************/
@@ -180,7 +78,7 @@ float MQ135::getCorrectedResistance(float t, float h) {
 */
 /**************************************************************************/
 float MQ135::getPPM() {
-  return PARA * pow((getResistance()/(_Rzero / 1000.)), -PARB);
+  return PARA * pow((getResistance()/RZERO), -PARB);
 }
 
 /**************************************************************************/
@@ -195,7 +93,7 @@ float MQ135::getPPM() {
 */
 /**************************************************************************/
 float MQ135::getCorrectedPPM(float t, float h) {
-  return PARA * pow((getCorrectedResistance(t, h)/(_Rzero/1000.)), -PARB);
+  return PARA * pow((getCorrectedResistance(t, h)/RZERO), -PARB);
 }
 
 /**************************************************************************/

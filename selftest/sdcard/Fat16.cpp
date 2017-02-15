@@ -19,7 +19,7 @@
  */
 #include <avr/pgmspace.h>
 #include <Arduino.h>
-#include <Fat16.h>
+#include "Fat16.h"
 //-----------------------------------------------------------------------------
 // volume info
 bool     Fat16::volumeInitialized_ = false;  // true if FAT16 volume is valid
